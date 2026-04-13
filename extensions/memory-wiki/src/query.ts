@@ -97,6 +97,7 @@ function getQueryDirs(config: ResolvedMemoryWikiConfig): string[] {
     layout.entitiesDir,
     layout.conceptsDir,
     layout.sourcesDir,
+    layout.queriesDir,
     layout.synthesesDir,
     layout.reportsDir,
   ];
@@ -219,6 +220,7 @@ function buildSnippet(raw: string, query: string): string {
 }
 
 function buildPageSearchText(page: QueryableWikiPage): string {
+  const parsed = parseWikiMarkdown(page.raw);
   return [
     page.title,
     page.relativePath,
@@ -228,6 +230,7 @@ function buildPageSearchText(page: QueryableWikiPage): string {
     page.contradictions.join(" "),
     page.claims.map((claim) => claim.text).join(" "),
     page.claims.map((claim) => claim.id ?? "").join(" "),
+    parsed.body,
   ]
     .filter(Boolean)
     .join("\n");
@@ -648,12 +651,14 @@ export function resolveQueryableWikiPageByLookup(
 ): QueryableWikiPage | null {
   const key = normalizeLookupKey(lookup);
   const withExtension = key.endsWith(".md") ? key : `${key}.md`;
+  const titleKey = normalizeLowercaseStringOrEmpty(lookup).trim();
   return (
     pages.find((page) => page.relativePath === key) ??
     pages.find((page) => page.relativePath === withExtension) ??
     pages.find((page) => page.relativePath.replace(/\.md$/i, "") === key) ??
     pages.find((page) => path.basename(page.relativePath, ".md") === key) ??
     pages.find((page) => page.id === key) ??
+    pages.find((page) => normalizeLowercaseStringOrEmpty(page.title) === titleKey) ??
     null
   );
 }
