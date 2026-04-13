@@ -603,6 +603,63 @@ describe("getMemoryWikiPage", () => {
     });
   });
 
+  it("uses compiled local-index search when enabled", async () => {
+    const { rootDir, config } = await createQueryVault({
+      initialize: true,
+      config: {
+        search: { backend: "local-index", corpus: "wiki" },
+      },
+    });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha Source" },
+        body: "# Alpha Source\n\nkarpathy style knowledge vault with lexical retrieval\n",
+      }),
+      "utf8",
+    );
+    await compileMemoryWikiVault(config);
+
+    const results = await searchMemoryWiki({ config, query: "karpathy vault" });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      corpus: "wiki",
+      path: "sources/alpha.md",
+      title: "Alpha Source",
+    });
+  });
+
+  it("resolves get through local-index metadata without using shared memory", async () => {
+    const { rootDir, config } = await createQueryVault({
+      initialize: true,
+      config: {
+        search: { backend: "local-index", corpus: "wiki" },
+      },
+    });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha Source" },
+        body: "# Alpha Source\n\nline one\nline two\n",
+      }),
+      "utf8",
+    );
+    await compileMemoryWikiVault(config);
+
+    const result = await getMemoryWikiPage({
+      config,
+      lookup: "Alpha Source",
+    });
+
+    expect(result).toMatchObject({
+      corpus: "wiki",
+      path: "sources/alpha.md",
+      title: "Alpha Source",
+    });
+    expect(result?.content).toContain("line one");
+  });
+
   it("allows per-call get overrides to bypass wiki and force memory fallback", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,

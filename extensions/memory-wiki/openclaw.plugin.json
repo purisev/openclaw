@@ -190,7 +190,7 @@
         "properties": {
           "backend": {
             "type": "string",
-            "enum": ["shared", "local"]
+            "enum": ["shared", "local", "local-index"]
           },
           "corpus": {
             "type": "string",

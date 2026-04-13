@@ -11,7 +11,7 @@ import {
 
 export const WIKI_VAULT_MODES = ["isolated", "bridge", "unsafe-local"] as const;
 export const WIKI_RENDER_MODES = ["native", "obsidian"] as const;
-export const WIKI_SEARCH_BACKENDS = ["shared", "local"] as const;
+export const WIKI_SEARCH_BACKENDS = ["shared", "local", "local-index"] as const;
 export const WIKI_SEARCH_CORPORA = ["wiki", "memory", "all"] as const;
 
 export type WikiVaultMode = (typeof WIKI_VAULT_MODES)[number];

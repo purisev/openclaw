@@ -917,6 +917,240 @@ function buildClaimsDigestLines(params: { pages: WikiPageSummary[] }): string[] 
     .toSorted((left, right) => left.localeCompare(right));
 }
 
+function tokenizeSearchText(value: string): string[] {
+  return normalizeLowercaseStringOrEmpty(value)
+    .split(/[^\p{L}\p{N}._-]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
+
+type LocalSearchDocRecord = {
+  path: string;
+  title: string;
+  kind: WikiPageSummary["kind"];
+  id?: string;
+  sourceType?: string;
+  provenanceMode?: string;
+  sourcePath?: string;
+  updatedAt?: string;
+  contentHash: string;
+  preview: string;
+  fieldLengths: {
+    title: number;
+    path: number;
+    id: number;
+    sourceIds: number;
+    questions: number;
+    contradictions: number;
+    claims: number;
+    body: number;
+  };
+};
+
+type LocalSearchIndex = {
+  version: 2;
+  generatedAt: string;
+  stats: {
+    docCount: number;
+    avgFieldLengths: LocalSearchDocRecord["fieldLengths"];
+  };
+  docs: Record<string, LocalSearchDocRecord>;
+  terms: Record<
+    string,
+    {
+      df: number;
+      postings: Record<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>;
+    }
+  >;
+};
+
+function updateFieldTermCounts(
+  target: Map<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>,
+  field: keyof LocalSearchDocRecord["fieldLengths"],
+  value: string,
+): number {
+  const tokens = tokenizeSearchText(value);
+  for (const token of tokens) {
+    const current = target.get(token) ?? {};
+    current[field] = (current[field] ?? 0) + 1;
+    target.set(token, current);
+  }
+  return tokens.length;
+}
+
+async function sha1Text(value: string): Promise<string> {
+  const { createHash } = await import("node:crypto");
+  return createHash("sha1").update(value).digest("hex");
+}
+
+async function buildLocalSearchIndex(params: {
+  rootDir: string;
+  pages: WikiPageSummary[];
+  existing?: LocalSearchIndex | null;
+}): Promise<LocalSearchIndex> {
+  const previousDocs = params.existing?.docs ?? {};
+  const nextDocs: Record<string, LocalSearchDocRecord> = {};
+  const docTerms = new Map<
+    string,
+    Map<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>
+  >();
+
+  for (const page of params.pages) {
+    const raw = await fs.readFile(path.join(params.rootDir, page.relativePath), "utf8");
+    const contentHash = await sha1Text(raw);
+    const previousDoc = previousDocs[page.relativePath];
+
+    if (previousDoc && previousDoc.contentHash === contentHash) {
+      nextDocs[page.relativePath] = {
+        ...previousDoc,
+        title: page.title,
+        kind: page.kind,
+        ...(page.id ? { id: page.id } : {}),
+        ...(page.sourceType ? { sourceType: page.sourceType } : {}),
+        ...(page.provenanceMode ? { provenanceMode: page.provenanceMode } : {}),
+        ...(page.sourcePath ? { sourcePath: page.sourcePath } : {}),
+        ...(page.updatedAt ? { updatedAt: page.updatedAt } : {}),
+      };
+      continue;
+    }
+
+    const parsed = parseWikiMarkdown(raw);
+    const fieldCounts = new Map<
+      string,
+      Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>
+    >();
+    const fieldLengths = {
+      title: updateFieldTermCounts(fieldCounts, "title", page.title),
+      path: updateFieldTermCounts(fieldCounts, "path", page.relativePath),
+      id: updateFieldTermCounts(fieldCounts, "id", page.id ?? ""),
+      sourceIds: updateFieldTermCounts(fieldCounts, "sourceIds", page.sourceIds.join(" ")),
+      questions: updateFieldTermCounts(fieldCounts, "questions", page.questions.join(" ")),
+      contradictions: updateFieldTermCounts(
+        fieldCounts,
+        "contradictions",
+        page.contradictions.join(" "),
+      ),
+      claims: updateFieldTermCounts(
+        fieldCounts,
+        "claims",
+        page.claims
+          .flatMap((claim) => [claim.text, claim.id ?? ""])
+          .filter(Boolean)
+          .join(" "),
+      ),
+      body: updateFieldTermCounts(fieldCounts, "body", parsed.body),
+    };
+    nextDocs[page.relativePath] = {
+      path: page.relativePath,
+      title: page.title,
+      kind: page.kind,
+      ...(page.id ? { id: page.id } : {}),
+      ...(page.sourceType ? { sourceType: page.sourceType } : {}),
+      ...(page.provenanceMode ? { provenanceMode: page.provenanceMode } : {}),
+      ...(page.sourcePath ? { sourcePath: page.sourcePath } : {}),
+      ...(page.updatedAt ? { updatedAt: page.updatedAt } : {}),
+      contentHash,
+      preview:
+        parsed.body
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line.length > 0) ?? "",
+      fieldLengths,
+    };
+    docTerms.set(page.relativePath, fieldCounts);
+  }
+
+  const reusablePostings = new Map<
+    string,
+    Map<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>
+  >();
+  if (params.existing) {
+    for (const [term, termEntry] of Object.entries(params.existing.terms)) {
+      for (const [docPath, posting] of Object.entries(termEntry.postings)) {
+        if (docTerms.has(docPath)) {
+          continue;
+        }
+        const previousDoc = previousDocs[docPath];
+        const nextDoc = nextDocs[docPath];
+        if (!previousDoc || !nextDoc || previousDoc.contentHash !== nextDoc.contentHash) {
+          continue;
+        }
+        const bucket = reusablePostings.get(docPath) ?? new Map();
+        bucket.set(term, posting);
+        reusablePostings.set(docPath, bucket);
+      }
+    }
+  }
+
+  for (const [docPath, tokenMap] of reusablePostings.entries()) {
+    docTerms.set(docPath, tokenMap);
+  }
+
+  const terms: LocalSearchIndex["terms"] = {};
+  for (const [docPath, tokenMap] of docTerms.entries()) {
+    for (const [term, fieldFreqs] of tokenMap.entries()) {
+      const current = terms[term] ?? { df: 0, postings: {} };
+      current.postings[docPath] = fieldFreqs;
+      current.df = Object.keys(current.postings).length;
+      terms[term] = current;
+    }
+  }
+
+  const docValues = Object.values(nextDocs).toSorted((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+  const avgFieldLengths = {
+    title: 0,
+    path: 0,
+    id: 0,
+    sourceIds: 0,
+    questions: 0,
+    contradictions: 0,
+    claims: 0,
+    body: 0,
+  };
+  for (const doc of docValues) {
+    for (const key of Object.keys(avgFieldLengths) as Array<keyof typeof avgFieldLengths>) {
+      avgFieldLengths[key] += doc.fieldLengths[key];
+    }
+  }
+  if (docValues.length > 0) {
+    for (const key of Object.keys(avgFieldLengths) as Array<keyof typeof avgFieldLengths>) {
+      avgFieldLengths[key] = Number((avgFieldLengths[key] / docValues.length).toFixed(3));
+    }
+  }
+
+  const sortedTerms = Object.fromEntries(
+    Object.entries(terms)
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([term, entry]) => [
+        term,
+        {
+          df: entry.df,
+          postings: Object.fromEntries(
+            Object.entries(entry.postings).toSorted(([left], [right]) => left.localeCompare(right)),
+          ),
+        },
+      ]),
+  ) as LocalSearchIndex["terms"];
+
+  return {
+    version: 2,
+    generatedAt:
+      params.existing &&
+      JSON.stringify(params.existing.docs) === JSON.stringify(nextDocs) &&
+      JSON.stringify(params.existing.terms) === JSON.stringify(sortedTerms)
+        ? params.existing.generatedAt
+        : new Date().toISOString(),
+    stats: {
+      docCount: docValues.length,
+      avgFieldLengths,
+    },
+    docs: Object.fromEntries(docValues.map((doc) => [doc.path, doc])) as LocalSearchIndex["docs"],
+    terms: sortedTerms,
+  };
+}
+
 async function writeAgentDigestArtifacts(params: {
   rootDir: string;
   config: ResolvedMemoryWikiConfig;
@@ -927,6 +1161,11 @@ async function writeAgentDigestArtifacts(params: {
   const layout = resolveWikiPaths(params.config);
   const agentDigestPath = path.join(params.rootDir, layout.systemCacheDir, "agent-digest.json");
   const claimsDigestPath = path.join(params.rootDir, layout.systemCacheDir, "claims.jsonl");
+  const localSearchIndexPath = path.join(
+    params.rootDir,
+    layout.systemCacheDir,
+    "local-search-index.json",
+  );
   const agentDigest = `${JSON.stringify(
     buildAgentDigest({
       pages: params.pages,
@@ -938,10 +1177,24 @@ async function writeAgentDigestArtifacts(params: {
   const claimsDigest = withTrailingNewline(
     buildClaimsDigestLines({ pages: params.pages }).join("\n"),
   );
+  const existingLocalSearchIndex = await fs
+    .readFile(localSearchIndexPath, "utf8")
+    .then((raw) => JSON.parse(raw) as LocalSearchIndex)
+    .catch(() => null);
+  const localSearchIndex = `${JSON.stringify(
+    await buildLocalSearchIndex({
+      rootDir: params.rootDir,
+      pages: params.pages,
+      existing: existingLocalSearchIndex,
+    }),
+    null,
+    2,
+  )}\n`;
 
   for (const [filePath, content] of [
     [agentDigestPath, agentDigest],
     [claimsDigestPath, claimsDigest],
+    [localSearchIndexPath, localSearchIndex],
   ] as const) {
     const existing = await fs.readFile(filePath, "utf8").catch(() => "");
     if (existing === content) {
