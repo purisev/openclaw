@@ -983,14 +983,43 @@ async function sha1Text(value: string): Promise<string> {
   return createHash("sha1").update(value).digest("hex");
 }
 
+function createEmptyFieldLengths(): LocalSearchDocRecord["fieldLengths"] {
+  return {
+    title: 0,
+    path: 0,
+    id: 0,
+    sourceIds: 0,
+    questions: 0,
+    contradictions: 0,
+    claims: 0,
+    body: 0,
+  };
+}
+
+function sortPostingMap(
+  postings: Record<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>,
+): Record<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>> {
+  return Object.fromEntries(
+    Object.entries(postings).toSorted(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 async function buildLocalSearchIndex(params: {
   rootDir: string;
   pages: WikiPageSummary[];
   existing?: LocalSearchIndex | null;
 }): Promise<LocalSearchIndex> {
   const previousDocs = params.existing?.docs ?? {};
+  const previousTerms = params.existing?.terms ?? {};
   const nextDocs: Record<string, LocalSearchDocRecord> = {};
-  const docTerms = new Map<
+  const changedDocPaths = new Set<string>();
+  const deletedDocPaths = new Set(
+    Object.keys(previousDocs).filter(
+      (docPath) => !params.pages.some((page) => page.relativePath === docPath),
+    ),
+  );
+
+  const freshDocTerms = new Map<
     string,
     Map<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>
   >();
@@ -1014,6 +1043,7 @@ async function buildLocalSearchIndex(params: {
       continue;
     }
 
+    changedDocPaths.add(page.relativePath);
     const parsed = parseWikiMarkdown(raw);
     const fieldCounts = new Map<
       string,
@@ -1057,58 +1087,50 @@ async function buildLocalSearchIndex(params: {
           .find((line) => line.length > 0) ?? "",
       fieldLengths,
     };
-    docTerms.set(page.relativePath, fieldCounts);
+    freshDocTerms.set(page.relativePath, fieldCounts);
   }
 
-  const reusablePostings = new Map<
-    string,
-    Map<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>
-  >();
-  if (params.existing) {
-    for (const [term, termEntry] of Object.entries(params.existing.terms)) {
-      for (const [docPath, posting] of Object.entries(termEntry.postings)) {
-        if (docTerms.has(docPath)) {
-          continue;
-        }
-        const previousDoc = previousDocs[docPath];
-        const nextDoc = nextDocs[docPath];
-        if (!previousDoc || !nextDoc || previousDoc.contentHash !== nextDoc.contentHash) {
-          continue;
-        }
-        const bucket = reusablePostings.get(docPath) ?? new Map();
-        bucket.set(term, posting);
-        reusablePostings.set(docPath, bucket);
-      }
+  const nextTerms: LocalSearchIndex["terms"] = {};
+  for (const [term, entry] of Object.entries(previousTerms)) {
+    const nextPostings = Object.fromEntries(
+      Object.entries(entry.postings).filter(
+        ([docPath]) => !changedDocPaths.has(docPath) && !deletedDocPaths.has(docPath),
+      ),
+    );
+    const df = Object.keys(nextPostings).length;
+    if (df > 0) {
+      nextTerms[term] = {
+        df,
+        postings: sortPostingMap(nextPostings),
+      };
     }
   }
 
-  for (const [docPath, tokenMap] of reusablePostings.entries()) {
-    docTerms.set(docPath, tokenMap);
-  }
-
-  const terms: LocalSearchIndex["terms"] = {};
-  for (const [docPath, tokenMap] of docTerms.entries()) {
+  for (const [docPath, tokenMap] of freshDocTerms.entries()) {
     for (const [term, fieldFreqs] of tokenMap.entries()) {
-      const current = terms[term] ?? { df: 0, postings: {} };
+      const current = nextTerms[term] ?? { df: 0, postings: {} };
       current.postings[docPath] = fieldFreqs;
       current.df = Object.keys(current.postings).length;
-      terms[term] = current;
+      nextTerms[term] = current;
     }
   }
+
+  const sortedTerms = Object.fromEntries(
+    Object.entries(nextTerms)
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([term, entry]) => [
+        term,
+        {
+          df: Object.keys(entry.postings).length,
+          postings: sortPostingMap(entry.postings),
+        },
+      ]),
+  ) as LocalSearchIndex["terms"];
 
   const docValues = Object.values(nextDocs).toSorted((left, right) =>
     left.path.localeCompare(right.path),
   );
-  const avgFieldLengths = {
-    title: 0,
-    path: 0,
-    id: 0,
-    sourceIds: 0,
-    questions: 0,
-    contradictions: 0,
-    claims: 0,
-    body: 0,
-  };
+  const avgFieldLengths = createEmptyFieldLengths();
   for (const doc of docValues) {
     for (const key of Object.keys(avgFieldLengths) as Array<keyof typeof avgFieldLengths>) {
       avgFieldLengths[key] += doc.fieldLengths[key];
@@ -1120,33 +1142,34 @@ async function buildLocalSearchIndex(params: {
     }
   }
 
-  const sortedTerms = Object.fromEntries(
-    Object.entries(terms)
-      .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([term, entry]) => [
-        term,
-        {
-          df: entry.df,
-          postings: Object.fromEntries(
-            Object.entries(entry.postings).toSorted(([left], [right]) => left.localeCompare(right)),
-          ),
-        },
-      ]),
-  ) as LocalSearchIndex["terms"];
+  const sortedDocs = Object.fromEntries(
+    docValues.map((doc) => [doc.path, doc]),
+  ) as LocalSearchIndex["docs"];
+  const docsUnchanged = params.existing
+    ? JSON.stringify(params.existing.docs) === JSON.stringify(sortedDocs)
+    : false;
+  const termsUnchanged = params.existing
+    ? JSON.stringify(params.existing.terms) === JSON.stringify(sortedTerms)
+    : false;
+  const statsUnchanged =
+    params.existing &&
+    JSON.stringify(params.existing.stats) ===
+      JSON.stringify({
+        docCount: docValues.length,
+        avgFieldLengths,
+      });
 
   return {
     version: 2,
     generatedAt:
-      params.existing &&
-      JSON.stringify(params.existing.docs) === JSON.stringify(nextDocs) &&
-      JSON.stringify(params.existing.terms) === JSON.stringify(sortedTerms)
+      params.existing && docsUnchanged && termsUnchanged && statsUnchanged
         ? params.existing.generatedAt
         : new Date().toISOString(),
     stats: {
       docCount: docValues.length,
       avgFieldLengths,
     },
-    docs: Object.fromEntries(docValues.map((doc) => [doc.path, doc])) as LocalSearchIndex["docs"],
+    docs: sortedDocs,
     terms: sortedTerms,
   };
 }
