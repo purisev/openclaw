@@ -361,6 +361,68 @@ describe("compileMemoryWikiVault", () => {
     await expect(fs.access(path.join(rootDir, "reports", "open-questions.md"))).rejects.toThrow();
   });
 
+  it("rebuilds local lexical index incrementally and removes deleted doc postings", async () => {
+    const { rootDir, config } = await createVault({
+      rootDir: nextCaseRoot(),
+      initialize: true,
+      config: {
+        search: { backend: "local-index" },
+      },
+    });
+
+    const alphaPath = path.join(rootDir, "sources", "alpha.md");
+    const betaPath = path.join(rootDir, "sources", "beta.md");
+    const indexPath = path.join(rootDir, ".openclaw-wiki", "cache", "local-search-index.json");
+
+    await fs.writeFile(
+      alphaPath,
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha" },
+        body: "# Alpha\n\nalpha token shared token\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      betaPath,
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.beta", title: "Beta" },
+        body: "# Beta\n\nbeta token shared token\n",
+      }),
+      "utf8",
+    );
+
+    await compileMemoryWikiVault(config);
+    const firstIndex = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Record<string, { contentHash: string }>;
+      terms: Record<string, { postings: Record<string, unknown> }>;
+    };
+    const alphaHashBefore = firstIndex.docs["sources/alpha.md"]?.contentHash;
+    const betaHashBefore = firstIndex.docs["sources/beta.md"]?.contentHash;
+
+    await fs.writeFile(
+      alphaPath,
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha" },
+        body: "# Alpha\n\nalpha token changed token\n",
+      }),
+      "utf8",
+    );
+    await fs.rm(betaPath);
+
+    await compileMemoryWikiVault(config);
+    const secondIndex = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Record<string, { contentHash: string }>;
+      terms: Record<string, { postings: Record<string, unknown> }>;
+    };
+
+    expect(secondIndex.docs["sources/alpha.md"]?.contentHash).not.toBe(alphaHashBefore);
+    expect(secondIndex.docs["sources/beta.md"]).toBeUndefined();
+    expect(secondIndex.terms.shared?.postings["sources/beta.md"]).toBeUndefined();
+    expect(secondIndex.terms.changed?.postings["sources/alpha.md"]).toBeDefined();
+    expect(secondIndex.terms.beta).toBeUndefined();
+    expect(secondIndex.docs["sources/alpha.md"]?.contentHash).not.toBe(betaHashBefore);
+  });
+
   it("ignores generated related links when computing backlinks on repeated compile", async () => {
     const { rootDir, config } = await createVault({
       rootDir: nextCaseRoot(),

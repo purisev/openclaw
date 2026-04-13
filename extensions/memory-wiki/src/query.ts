@@ -91,6 +91,46 @@ type QuerySearchOverrides = {
   searchCorpus?: WikiSearchCorpus;
 };
 
+type LocalSearchDocRecord = {
+  path: string;
+  title: string;
+  kind: WikiPageSummary["kind"];
+  id?: string;
+  sourceType?: string;
+  provenanceMode?: string;
+  sourcePath?: string;
+  updatedAt?: string;
+  contentHash: string;
+  preview: string;
+  fieldLengths: {
+    title: number;
+    path: number;
+    id: number;
+    sourceIds: number;
+    questions: number;
+    contradictions: number;
+    claims: number;
+    body: number;
+  };
+};
+
+type LocalSearchIndex = {
+  version: 2;
+  generatedAt: string;
+  stats: {
+    docCount: number;
+    avgFieldLengths: LocalSearchDocRecord["fieldLengths"];
+  };
+  docs: Record<string, LocalSearchDocRecord>;
+  terms: Record<
+    string,
+    {
+      df: number;
+      postings: Record<string, Partial<Record<keyof LocalSearchDocRecord["fieldLengths"], number>>>;
+    }
+  >;
+};
+
 function getQueryDirs(config: ResolvedMemoryWikiConfig): string[] {
   const layout = resolveWikiPaths(config);
   return [
@@ -234,6 +274,127 @@ function buildPageSearchText(page: QueryableWikiPage): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function tokenizeSearchText(value: string): string[] {
+  return normalizeLowercaseStringOrEmpty(value)
+    .split(/[^\p{L}\p{N}._-]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
+
+const LOCAL_INDEX_FIELD_WEIGHTS: Record<keyof LocalSearchDocRecord["fieldLengths"], number> = {
+  title: 4,
+  path: 3,
+  id: 3,
+  sourceIds: 1.5,
+  questions: 1.25,
+  contradictions: 1.25,
+  claims: 2,
+  body: 1,
+};
+
+function scoreIndexedDoc(
+  index: LocalSearchIndex,
+  doc: LocalSearchDocRecord,
+  query: string,
+): number {
+  const queryLower = normalizeLowercaseStringOrEmpty(query);
+  const queryTokens = tokenizeSearchText(query);
+  if (queryTokens.length === 0 && queryLower.length === 0) {
+    return 0;
+  }
+
+  let score = 0;
+  const titleLower = normalizeLowercaseStringOrEmpty(doc.title);
+  const pathLower = normalizeLowercaseStringOrEmpty(doc.path);
+  const idLower = normalizeLowercaseStringOrEmpty(doc.id);
+
+  if (titleLower === queryLower) {
+    score += 80;
+  } else if (queryLower && titleLower.includes(queryLower)) {
+    score += 35;
+  }
+  if (pathLower === queryLower) {
+    score += 60;
+  } else if (queryLower && pathLower.includes(queryLower)) {
+    score += 20;
+  }
+  if (idLower && queryLower && idLower.includes(queryLower)) {
+    score += 25;
+  }
+
+  for (const token of queryTokens) {
+    const term = index.terms[token];
+    const posting = term?.postings[doc.path];
+    if (!posting) {
+      continue;
+    }
+    const idf = Math.log(1 + index.stats.docCount / Math.max(1, term.df));
+    for (const [field, tf] of Object.entries(posting) as Array<
+      [keyof LocalSearchDocRecord["fieldLengths"], number]
+    >) {
+      const fieldLength = Math.max(1, doc.fieldLengths[field]);
+      const avgFieldLength = Math.max(1, index.stats.avgFieldLengths[field] || 1);
+      const normTf = tf / (0.5 + 0.5 * (fieldLength / avgFieldLength));
+      score += normTf * idf * LOCAL_INDEX_FIELD_WEIGHTS[field] * 10;
+    }
+  }
+
+  return score;
+}
+
+function toIndexedSearchResult(doc: LocalSearchDocRecord, score: number): WikiSearchResult {
+  const pageLike = {
+    title: doc.title,
+    relativePath: doc.path,
+    id: doc.id,
+    kind: doc.kind,
+    sourceType: doc.sourceType,
+    provenanceMode: doc.provenanceMode,
+    sourcePath: doc.sourcePath,
+    updatedAt: doc.updatedAt,
+  } as QueryableWikiPage;
+  return {
+    corpus: "wiki",
+    path: doc.path,
+    title: doc.title,
+    kind: doc.kind,
+    score,
+    snippet: doc.preview,
+    ...(doc.id ? { id: doc.id } : {}),
+    ...(doc.sourceType ? { sourceType: doc.sourceType } : {}),
+    ...(doc.provenanceMode ? { provenanceMode: doc.provenanceMode } : {}),
+    ...(doc.sourcePath ? { sourcePath: doc.sourcePath } : {}),
+    ...(buildWikiProvenanceLabel(pageLike)
+      ? { provenanceLabel: buildWikiProvenanceLabel(pageLike) }
+      : {}),
+    ...(doc.updatedAt ? { updatedAt: doc.updatedAt } : {}),
+  };
+}
+
+async function readLocalSearchIndex(
+  config: ResolvedMemoryWikiConfig,
+): Promise<LocalSearchIndex | null> {
+  const layout = resolveWikiPaths(config);
+  const raw = await fs
+    .readFile(
+      path.join(config.vault.path, layout.systemCacheDir, "local-search-index.json"),
+      "utf8",
+    )
+    .catch(() => null);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as LocalSearchIndex;
+    if (!parsed || parsed.version !== 2 || !parsed.docs || !parsed.terms) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function buildDigestPageSearchText(page: QueryDigestPage, claims: QueryDigestClaim[]): string {
@@ -470,6 +631,10 @@ function shouldSearchWiki(config: ResolvedMemoryWikiConfig): boolean {
   return config.search.corpus === "wiki" || config.search.corpus === "all";
 }
 
+function prefersLocalIndex(config: ResolvedMemoryWikiConfig): boolean {
+  return config.search.backend === "local-index";
+}
+
 function shouldSearchSharedMemory(
   config: ResolvedMemoryWikiConfig,
   appConfig?: OpenClawConfig,
@@ -602,6 +767,22 @@ async function searchWikiCorpus(params: {
   query: string;
   maxResults: number;
 }): Promise<WikiSearchResult[]> {
+  if (prefersLocalIndex(params.config)) {
+    const index = await readLocalSearchIndex(params.config);
+    if (index) {
+      return Object.values(index.docs)
+        .map((doc) => ({ doc, score: scoreIndexedDoc(index, doc, params.query) }))
+        .filter((entry) => entry.score > 0)
+        .toSorted((left, right) => {
+          if (left.score !== right.score) {
+            return right.score - left.score;
+          }
+          return left.doc.title.localeCompare(right.doc.title);
+        })
+        .slice(0, params.maxResults)
+        .map(({ doc, score }) => toIndexedSearchResult(doc, score));
+    }
+  }
   const digest = await readQueryDigestBundle(params.rootDir, params.config);
   const candidatePaths = digest
     ? buildDigestCandidatePaths({
@@ -733,6 +914,59 @@ export async function getMemoryWikiPage(params: {
           await readQueryableWikiPagesByPaths(effectiveConfig.vault.path, [digestClaimPagePath])
         )[0] ?? null)
       : null;
+    if (prefersLocalIndex(effectiveConfig)) {
+      const index = await readLocalSearchIndex(effectiveConfig);
+      const indexedMatch = Object.values(index?.docs ?? {}).find((entry) => {
+        const key = normalizeLookupKey(params.lookup);
+        const withExtension = key.endsWith(".md") ? key : `${key}.md`;
+        const titleKey = normalizeLowercaseStringOrEmpty(params.lookup).trim();
+        return (
+          entry.path === key ||
+          entry.path === withExtension ||
+          entry.path.replace(/\.md$/i, "") === key ||
+          path.basename(entry.path, ".md") === key ||
+          entry.id === key ||
+          normalizeLowercaseStringOrEmpty(entry.title) === titleKey
+        );
+      });
+      if (indexedMatch) {
+        const raw = await fs.readFile(
+          path.join(effectiveConfig.vault.path, indexedMatch.path),
+          "utf8",
+        );
+        const summary = toWikiPageSummary({
+          absolutePath: path.join(effectiveConfig.vault.path, indexedMatch.path),
+          relativePath: indexedMatch.path,
+          raw,
+        });
+        if (summary) {
+          const parsed = parseWikiMarkdown(raw);
+          const lines = parsed.body.split(/\r?\n/);
+          const totalLines = lines.length;
+          const slice = lines.slice(fromLine - 1, fromLine - 1 + lineCount).join("\n");
+          const truncated = fromLine - 1 + lineCount < totalLines;
+          return {
+            corpus: "wiki",
+            path: summary.relativePath,
+            title: summary.title,
+            kind: summary.kind,
+            content: slice,
+            fromLine,
+            lineCount,
+            totalLines,
+            truncated,
+            ...(summary.id ? { id: summary.id } : {}),
+            ...(summary.sourceType ? { sourceType: summary.sourceType } : {}),
+            ...(summary.provenanceMode ? { provenanceMode: summary.provenanceMode } : {}),
+            ...(summary.sourcePath ? { sourcePath: summary.sourcePath } : {}),
+            ...(buildWikiProvenanceLabel(summary)
+              ? { provenanceLabel: buildWikiProvenanceLabel(summary) }
+              : {}),
+            ...(summary.updatedAt ? { updatedAt: summary.updatedAt } : {}),
+          };
+        }
+      }
+    }
     const pages = digestLookupPage
       ? [digestLookupPage]
       : await readQueryableWikiPages(effectiveConfig.vault.path, effectiveConfig);
