@@ -7,7 +7,14 @@ import {
 } from "openclaw/plugin-sdk/text-runtime";
 import YAML from "yaml";
 
-export const WIKI_PAGE_KINDS = ["entity", "concept", "source", "synthesis", "report"] as const;
+export const WIKI_PAGE_KINDS = [
+  "entity",
+  "concept",
+  "source",
+  "query",
+  "synthesis",
+  "report",
+] as const;
 export const WIKI_RELATED_START_MARKER = "<!-- openclaw:wiki:related:start -->";
 export const WIKI_RELATED_END_MARKER = "<!-- openclaw:wiki:related:end -->";
 
@@ -257,19 +264,25 @@ export function renderMarkdownFence(content: string, infoString = "text"): strin
 
 export function inferWikiPageKind(relativePath: string): WikiPageKind | null {
   const normalized = relativePath.split(path.sep).join("/");
-  if (normalized.startsWith("entities/")) {
+  const pageTypeHint = normalized.match(
+    /(?:^|\/)(entities|concepts|sources|queries|syntheses|reports)\//,
+  )?.[1];
+  if (pageTypeHint === "entities") {
     return "entity";
   }
-  if (normalized.startsWith("concepts/")) {
+  if (pageTypeHint === "concepts") {
     return "concept";
   }
-  if (normalized.startsWith("sources/")) {
+  if (pageTypeHint === "sources") {
     return "source";
   }
-  if (normalized.startsWith("syntheses/")) {
+  if (pageTypeHint === "queries") {
+    return "query";
+  }
+  if (pageTypeHint === "syntheses") {
     return "synthesis";
   }
-  if (normalized.startsWith("reports/")) {
+  if (pageTypeHint === "reports") {
     return "report";
   }
   return null;
@@ -280,11 +293,20 @@ export function toWikiPageSummary(params: {
   relativePath: string;
   raw: string;
 }): WikiPageSummary | null {
-  const kind = inferWikiPageKind(params.relativePath);
+  const parsed = parseWikiMarkdown(params.raw);
+  const explicitPageType = normalizeOptionalString(parsed.frontmatter.pageType);
+  const kind =
+    (explicitPageType === "entity" ||
+    explicitPageType === "concept" ||
+    explicitPageType === "source" ||
+    explicitPageType === "query" ||
+    explicitPageType === "synthesis" ||
+    explicitPageType === "report"
+      ? explicitPageType
+      : null) ?? inferWikiPageKind(params.relativePath);
   if (!kind) {
     return null;
   }
-  const parsed = parseWikiMarkdown(params.raw);
   const title =
     (typeof parsed.frontmatter.title === "string" && parsed.frontmatter.title.trim()) ||
     extractTitleFromMarkdown(parsed.body) ||
@@ -296,7 +318,7 @@ export function toWikiPageSummary(params: {
     kind,
     title,
     id: normalizeOptionalString(parsed.frontmatter.id),
-    pageType: normalizeOptionalString(parsed.frontmatter.pageType),
+    pageType: explicitPageType,
     sourceIds: normalizeSourceIds(parsed.frontmatter.sourceIds),
     linkTargets: extractWikiLinks(params.raw),
     claims: normalizeWikiClaims(parsed.frontmatter.claims),

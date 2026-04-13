@@ -1,6 +1,13 @@
 import os from "node:os";
 import path from "node:path";
 import { buildPluginConfigSchema, z, type OpenClawPluginConfigSchema } from "../api.js";
+import {
+  MEMORY_WIKI_INBOX_MODES,
+  MEMORY_WIKI_LAYOUT_STYLES,
+  resolveWikiPaths,
+  type MemoryWikiInboxMode,
+  type MemoryWikiLayoutStyle,
+} from "./layout.js";
 
 export const WIKI_VAULT_MODES = ["isolated", "bridge", "unsafe-local"] as const;
 export const WIKI_RENDER_MODES = ["native", "obsidian"] as const;
@@ -17,6 +24,23 @@ export type MemoryWikiPluginConfig = {
   vault?: {
     path?: string;
     renderMode?: WikiRenderMode;
+  };
+  layout?: {
+    style?: MemoryWikiLayoutStyle;
+    rootIndex?: string;
+    overview?: string;
+    log?: string;
+    inbox?: string;
+    inboxMode?: MemoryWikiInboxMode;
+    entitiesDir?: string;
+    conceptsDir?: string;
+    sourcesDir?: string;
+    queriesDir?: string;
+    synthesesDir?: string;
+    reportsDir?: string;
+    attachmentsDir?: string;
+    viewsDir?: string;
+    systemDir?: string;
   };
   obsidian?: {
     enabled?: boolean;
@@ -60,6 +84,25 @@ export type ResolvedMemoryWikiConfig = {
   vault: {
     path: string;
     renderMode: WikiRenderMode;
+  };
+  layout: {
+    style: MemoryWikiLayoutStyle;
+    rootIndex: string;
+    overview: string;
+    log: string;
+    inbox: string;
+    inboxMode: MemoryWikiInboxMode;
+    entitiesDir: string;
+    conceptsDir: string;
+    sourcesDir: string;
+    queriesDir: string;
+    synthesesDir: string;
+    reportsDir: string;
+    attachmentsDir: string;
+    viewsDir: string;
+    systemDir: string;
+    systemLocksDir: string;
+    systemCacheDir: string;
   };
   obsidian: {
     enabled: boolean;
@@ -109,6 +152,25 @@ const MemoryWikiConfigSource = z.strictObject({
     .strictObject({
       path: z.string().optional(),
       renderMode: z.enum(WIKI_RENDER_MODES).optional(),
+    })
+    .optional(),
+  layout: z
+    .strictObject({
+      style: z.enum(MEMORY_WIKI_LAYOUT_STYLES).optional(),
+      rootIndex: z.string().optional(),
+      overview: z.string().optional(),
+      log: z.string().optional(),
+      inbox: z.string().optional(),
+      inboxMode: z.enum(MEMORY_WIKI_INBOX_MODES).optional(),
+      entitiesDir: z.string().optional(),
+      conceptsDir: z.string().optional(),
+      sourcesDir: z.string().optional(),
+      queriesDir: z.string().optional(),
+      synthesesDir: z.string().optional(),
+      reportsDir: z.string().optional(),
+      attachmentsDir: z.string().optional(),
+      viewsDir: z.string().optional(),
+      systemDir: z.string().optional(),
     })
     .optional(),
   obsidian: z
@@ -219,6 +281,25 @@ export function resolveMemoryWikiConfig(
       ),
       renderMode: safeConfig.vault?.renderMode ?? DEFAULT_WIKI_RENDER_MODE,
     },
+    layout: resolveWikiPaths({
+      layout: {
+        style: safeConfig.layout?.style,
+        rootIndex: safeConfig.layout?.rootIndex,
+        overview: safeConfig.layout?.overview,
+        log: safeConfig.layout?.log,
+        inbox: safeConfig.layout?.inbox,
+        inboxMode: safeConfig.layout?.inboxMode,
+        entitiesDir: safeConfig.layout?.entitiesDir,
+        conceptsDir: safeConfig.layout?.conceptsDir,
+        sourcesDir: safeConfig.layout?.sourcesDir,
+        queriesDir: safeConfig.layout?.queriesDir,
+        synthesesDir: safeConfig.layout?.synthesesDir,
+        reportsDir: safeConfig.layout?.reportsDir,
+        attachmentsDir: safeConfig.layout?.attachmentsDir,
+        viewsDir: safeConfig.layout?.viewsDir,
+        systemDir: safeConfig.layout?.systemDir,
+      },
+    }),
     obsidian: {
       enabled: safeConfig.obsidian?.enabled ?? false,
       useOfficialCli: safeConfig.obsidian?.useOfficialCli ?? false,

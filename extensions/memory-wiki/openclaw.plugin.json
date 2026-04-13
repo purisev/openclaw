@@ -58,6 +58,59 @@
           }
         }
       },
+      "layout": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "style": {
+            "type": "string",
+            "enum": ["default", "karpathy-style"]
+          },
+          "rootIndex": {
+            "type": "string"
+          },
+          "overview": {
+            "type": "string"
+          },
+          "log": {
+            "type": "string"
+          },
+          "inbox": {
+            "type": "string"
+          },
+          "inboxMode": {
+            "type": "string",
+            "enum": ["file", "directory"]
+          },
+          "entitiesDir": {
+            "type": "string"
+          },
+          "conceptsDir": {
+            "type": "string"
+          },
+          "sourcesDir": {
+            "type": "string"
+          },
+          "queriesDir": {
+            "type": "string"
+          },
+          "synthesesDir": {
+            "type": "string"
+          },
+          "reportsDir": {
+            "type": "string"
+          },
+          "attachmentsDir": {
+            "type": "string"
+          },
+          "viewsDir": {
+            "type": "string"
+          },
+          "systemDir": {
+            "type": "string"
+          }
+        }
+      },
       "obsidian": {
         "type": "object",
         "additionalProperties": false,

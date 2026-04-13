@@ -110,6 +110,54 @@ describe("compileMemoryWikiVault", () => {
     );
   });
 
+  it("writes karpathy-style root, query, and log outputs when configured", async () => {
+    const { rootDir, config } = await createVault({
+      rootDir: nextCaseRoot(),
+      initialize: true,
+      config: {
+        vault: { renderMode: "obsidian" },
+        layout: { style: "karpathy-style" },
+      },
+    });
+
+    await fs.writeFile(
+      path.join(rootDir, "wiki", "sources", "alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: { pageType: "source", id: "source.alpha", title: "Alpha" },
+        body: "# Alpha\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "wiki", "queries", "alpha-question.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "query",
+          id: "query.alpha.question",
+          title: "Alpha Question",
+          sourceIds: ["source.alpha"],
+        },
+        body: "# Alpha Question\n\nWhat matters about Alpha?\n",
+      }),
+      "utf8",
+    );
+
+    await compileMemoryWikiVault(config);
+
+    await expect(fs.readFile(path.join(rootDir, "wiki", "index.md"), "utf8")).resolves.toContain(
+      "[[wiki/sources/alpha|Alpha]]",
+    );
+    await expect(fs.readFile(path.join(rootDir, "wiki", "index.md"), "utf8")).resolves.toContain(
+      "### Queries",
+    );
+    await expect(
+      fs.readFile(path.join(rootDir, "wiki", "queries", "index.md"), "utf8"),
+    ).resolves.toContain("[[wiki/queries/alpha-question|Alpha Question]]");
+    await expect(fs.readFile(path.join(rootDir, "wiki", "log.md"), "utf8")).resolves.toContain(
+      "compile | wiki compiled",
+    );
+  });
+
   it("writes related blocks from source ids and shared sources", async () => {
     const { rootDir, config } = await createVault({
       rootDir: nextCaseRoot(),
