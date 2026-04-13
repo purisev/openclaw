@@ -55,7 +55,7 @@ Put config under `plugins.entries.memory-wiki.config`:
   },
 
   search: {
-    backend: "shared", // or "local"
+    backend: "shared", // or "local" | "local-index"
     corpus: "wiki", // or "memory" | "all"
   },
 
@@ -174,4 +174,5 @@ Write methods:
 - Bridge mode reads the active memory plugin through public seams only.
 - Wiki pages are compiled artifacts, not the ultimate source of truth. Keep provenance attached to raw sources, memory artifacts, and daily notes.
 - The compiled agent digests in `.openclaw-wiki/cache/agent-digest.json` and `.openclaw-wiki/cache/claims.jsonl` are the stable machine-facing view of the wiki.
+- `search.backend = "local-index"` enables a local compile-time lexical index stored at `.openclaw-wiki/cache/local-search-index.json` for stronger title/body/token ranking without external services.
 - Obsidian CLI support requires the official `obsidian` CLI to be installed and available on `PATH`.
