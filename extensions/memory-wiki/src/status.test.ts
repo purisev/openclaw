@@ -191,6 +191,7 @@ describe("renderMemoryWikiStatus", () => {
         source: 0,
         entity: 0,
         concept: 0,
+        query: 0,
         synthesis: 0,
         report: 0,
       },
@@ -205,7 +206,9 @@ describe("renderMemoryWikiStatus", () => {
     });
 
     expect(rendered).toContain("Wiki vault mode: isolated");
-    expect(rendered).toContain("Pages: 0 sources, 0 entities, 0 concepts, 0 syntheses, 0 reports");
+    expect(rendered).toContain(
+      "Pages: 0 sources, 0 entities, 0 concepts, 0 queries, 0 syntheses, 0 reports",
+    );
     expect(rendered).toContain(
       "Source provenance: 0 native, 0 bridge, 0 bridge-events, 0 unsafe-local, 0 other",
     );

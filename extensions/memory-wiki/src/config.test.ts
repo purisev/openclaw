@@ -57,6 +57,22 @@ describe("resolveMemoryWikiConfig", () => {
 
     expect(canonical.bridge.readMemoryArtifacts).toBe(false);
   });
+
+  it("resolves karpathy-style layout defaults", () => {
+    const config = resolveMemoryWikiConfig({
+      layout: {
+        style: "karpathy-style",
+      },
+    });
+
+    expect(config.layout.style).toBe("karpathy-style");
+    expect(config.layout.rootIndex).toBe("wiki/index.md");
+    expect(config.layout.overview).toBe("wiki/overview.md");
+    expect(config.layout.log).toBe("wiki/log.md");
+    expect(config.layout.inbox).toBe("raw/inbox");
+    expect(config.layout.inboxMode).toBe("directory");
+    expect(config.layout.queriesDir).toBe("wiki/queries");
+  });
 });
 
 describe("memory-wiki manifest config schema", () => {

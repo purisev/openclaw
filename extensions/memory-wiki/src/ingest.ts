@@ -51,7 +51,7 @@ export async function ingestMemoryWikiSource(params: {
   const title = resolveSourceTitle(sourcePath, params.title);
   const slug = slugifyWikiSegment(title);
   const pageId = `source.${slug}`;
-  const pageRelativePath = path.join("sources", `${slug}.md`);
+  const pageRelativePath = path.join(params.config.layout.sourcesDir, `${slug}.md`);
   const pagePath = path.join(params.config.vault.path, pageRelativePath);
   const created = !(await pathExists(pagePath));
   const timestamp = new Date(params.nowMs ?? Date.now()).toISOString();
@@ -87,17 +87,21 @@ export async function ingestMemoryWikiSource(params: {
   });
 
   await fs.writeFile(pagePath, markdown, "utf8");
-  await appendMemoryWikiLog(params.config.vault.path, {
-    type: "ingest",
-    timestamp,
-    details: {
-      inputPath: sourcePath,
-      pageId,
-      pagePath: pageRelativePath.split(path.sep).join("/"),
-      bytes: buffer.byteLength,
-      created,
+  await appendMemoryWikiLog(
+    params.config.vault.path,
+    {
+      type: "ingest",
+      timestamp,
+      details: {
+        inputPath: sourcePath,
+        pageId,
+        pagePath: pageRelativePath.split(path.sep).join("/"),
+        bytes: buffer.byteLength,
+        created,
+      },
     },
-  });
+    params.config,
+  );
   const compile = await compileMemoryWikiVault(params.config);
 
   return {

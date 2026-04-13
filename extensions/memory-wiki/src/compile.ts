@@ -21,6 +21,7 @@ import {
   type WikiPageContradictionCluster,
 } from "./claim-health.js";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
+import { resolveWikiPaths } from "./layout.js";
 import { appendMemoryWikiLog } from "./log.js";
 import {
   formatWikiLink,
@@ -35,20 +36,24 @@ import {
 } from "./markdown.js";
 import { initializeMemoryWikiVault } from "./vault.js";
 
-const COMPILE_PAGE_GROUPS: Array<{ kind: WikiPageKind; dir: string; heading: string }> = [
-  { kind: "source", dir: "sources", heading: "Sources" },
-  { kind: "entity", dir: "entities", heading: "Entities" },
-  { kind: "concept", dir: "concepts", heading: "Concepts" },
-  { kind: "synthesis", dir: "syntheses", heading: "Syntheses" },
-  { kind: "report", dir: "reports", heading: "Reports" },
-];
-const AGENT_DIGEST_PATH = ".openclaw-wiki/cache/agent-digest.json";
-const CLAIMS_DIGEST_PATH = ".openclaw-wiki/cache/claims.jsonl";
+function getCompilePageGroups(
+  config: ResolvedMemoryWikiConfig,
+): Array<{ kind: WikiPageKind; dir: string; heading: string }> {
+  const layout = resolveWikiPaths(config);
+  return [
+    { kind: "source", dir: layout.sourcesDir, heading: "Sources" },
+    { kind: "entity", dir: layout.entitiesDir, heading: "Entities" },
+    { kind: "concept", dir: layout.conceptsDir, heading: "Concepts" },
+    { kind: "query", dir: layout.queriesDir, heading: "Queries" },
+    { kind: "synthesis", dir: layout.synthesesDir, heading: "Syntheses" },
+    { kind: "report", dir: layout.reportsDir, heading: "Reports" },
+  ];
+}
 
 type DashboardPageDefinition = {
   id: string;
   title: string;
-  relativePath: string;
+  relativePath: (config: ResolvedMemoryWikiConfig) => string;
   buildBody: (params: {
     config: ResolvedMemoryWikiConfig;
     pages: WikiPageSummary[];
@@ -60,7 +65,7 @@ const DASHBOARD_PAGES: DashboardPageDefinition[] = [
   {
     id: "report.open-questions",
     title: "Open Questions",
-    relativePath: "reports/open-questions.md",
+    relativePath: (config) => `${resolveWikiPaths(config).reportsDir}/open-questions.md`,
     buildBody: ({ config, pages }) => {
       const matches = pages.filter((page) => page.questions.length > 0);
       if (matches.length === 0) {
@@ -83,7 +88,7 @@ const DASHBOARD_PAGES: DashboardPageDefinition[] = [
   {
     id: "report.contradictions",
     title: "Contradictions",
-    relativePath: "reports/contradictions.md",
+    relativePath: (config) => `${resolveWikiPaths(config).reportsDir}/contradictions.md`,
     buildBody: ({ config, pages, now }) => {
       const pageClusters = buildPageContradictionClusters(pages);
       const claimClusters = buildClaimContradictionClusters({ pages, now });
@@ -112,7 +117,7 @@ const DASHBOARD_PAGES: DashboardPageDefinition[] = [
   {
     id: "report.low-confidence",
     title: "Low Confidence",
-    relativePath: "reports/low-confidence.md",
+    relativePath: (config) => `${resolveWikiPaths(config).reportsDir}/low-confidence.md`,
     buildBody: ({ config, pages, now }) => {
       const pageMatches = pages
         .filter((page) => typeof page.confidence === "number" && page.confidence < 0.5)
@@ -147,7 +152,7 @@ const DASHBOARD_PAGES: DashboardPageDefinition[] = [
   {
     id: "report.claim-health",
     title: "Claim Health",
-    relativePath: "reports/claim-health.md",
+    relativePath: (config) => `${resolveWikiPaths(config).reportsDir}/claim-health.md`,
     buildBody: ({ config, pages, now }) => {
       const claimHealth = collectWikiClaimHealth(pages, now);
       const missingEvidence = claimHealth.filter((claim) => claim.missingEvidence);
@@ -191,10 +196,10 @@ const DASHBOARD_PAGES: DashboardPageDefinition[] = [
   {
     id: "report.stale-pages",
     title: "Stale Pages",
-    relativePath: "reports/stale-pages.md",
+    relativePath: (config) => `${resolveWikiPaths(config).reportsDir}/stale-pages.md`,
     buildBody: ({ config, pages, now }) => {
       const matches = pages
-        .filter((page) => page.kind !== "report")
+        .filter((page) => page.kind !== "report" && page.kind !== "query")
         .flatMap((page) => {
           const freshness = assessPageFreshness(page, now);
           if (freshness.level === "fresh") {
@@ -242,9 +247,14 @@ async function collectMarkdownFiles(rootDir: string, relativeDir: string): Promi
     .toSorted((left, right) => left.localeCompare(right));
 }
 
-async function readPageSummaries(rootDir: string): Promise<WikiPageSummary[]> {
+async function readPageSummaries(
+  rootDir: string,
+  config: ResolvedMemoryWikiConfig,
+): Promise<WikiPageSummary[]> {
   const filePaths = (
-    await Promise.all(COMPILE_PAGE_GROUPS.map((group) => collectMarkdownFiles(rootDir, group.dir)))
+    await Promise.all(
+      getCompilePageGroups(config).map((group) => collectMarkdownFiles(rootDir, group.dir)),
+    )
   ).flat();
 
   const pages = await Promise.all(
@@ -265,6 +275,7 @@ function buildPageCounts(pages: WikiPageSummary[]): Record<WikiPageKind, number>
     entity: pages.filter((page) => page.kind === "entity").length,
     concept: pages.filter((page) => page.kind === "concept").length,
     source: pages.filter((page) => page.kind === "source").length,
+    query: pages.filter((page) => page.kind === "query").length,
     synthesis: pages.filter((page) => page.kind === "synthesis").length,
     report: pages.filter((page) => page.kind === "report").length,
   };
@@ -554,7 +565,8 @@ async function writeDashboardPage(params: {
   pages: WikiPageSummary[];
   now: Date;
 }): Promise<boolean> {
-  const filePath = path.join(params.rootDir, params.definition.relativePath);
+  const relativePath = params.definition.relativePath(params.config);
+  const filePath = path.join(params.rootDir, relativePath);
   const original = await fs.readFile(filePath, "utf8").catch(() =>
     renderWikiMarkdown({
       frontmatter: {
@@ -572,8 +584,8 @@ async function writeDashboardPage(params: {
   const updatedBody = replaceManagedMarkdownBlock({
     original: originalBody,
     heading: "## Generated",
-    startMarker: `<!-- openclaw:wiki:${path.basename(params.definition.relativePath, ".md")}:start -->`,
-    endMarker: `<!-- openclaw:wiki:${path.basename(params.definition.relativePath, ".md")}:end -->`,
+    startMarker: `<!-- openclaw:wiki:${path.basename(relativePath, ".md")}:start -->`,
+    endMarker: `<!-- openclaw:wiki:${path.basename(relativePath, ".md")}:end -->`,
     body: params.definition.buildBody({
       config: params.config,
       pages: params.pages,
@@ -643,7 +655,7 @@ async function refreshDashboardPages(params: {
         now,
       })
     ) {
-      updatedFiles.push(path.join(params.rootDir, definition.relativePath));
+      updatedFiles.push(path.join(params.rootDir, definition.relativePath(params.config)));
     }
   }
   return updatedFiles;
@@ -666,7 +678,7 @@ function buildRootIndexBody(params: {
     `- Reports: ${params.counts.report}`,
   ];
 
-  for (const group of COMPILE_PAGE_GROUPS) {
+  for (const group of getCompilePageGroups(params.config)) {
     lines.push("", `### ${group.heading}`);
     lines.push(
       renderSectionList({
@@ -907,12 +919,14 @@ function buildClaimsDigestLines(params: { pages: WikiPageSummary[] }): string[] 
 
 async function writeAgentDigestArtifacts(params: {
   rootDir: string;
+  config: ResolvedMemoryWikiConfig;
   pages: WikiPageSummary[];
   pageCounts: Record<WikiPageKind, number>;
 }): Promise<string[]> {
   const updatedFiles: string[] = [];
-  const agentDigestPath = path.join(params.rootDir, AGENT_DIGEST_PATH);
-  const claimsDigestPath = path.join(params.rootDir, CLAIMS_DIGEST_PATH);
+  const layout = resolveWikiPaths(params.config);
+  const agentDigestPath = path.join(params.rootDir, layout.systemCacheDir, "agent-digest.json");
+  const claimsDigestPath = path.join(params.rootDir, layout.systemCacheDir, "claims.jsonl");
   const agentDigest = `${JSON.stringify(
     buildAgentDigest({
       pages: params.pages,
@@ -944,25 +958,26 @@ export async function compileMemoryWikiVault(
 ): Promise<CompileMemoryWikiResult> {
   await initializeMemoryWikiVault(config);
   const rootDir = config.vault.path;
-  let pages = await readPageSummaries(rootDir);
+  let pages = await readPageSummaries(rootDir, config);
   const updatedFiles = await refreshPageRelatedBlocks({ config, pages });
   if (updatedFiles.length > 0) {
-    pages = await readPageSummaries(rootDir);
+    pages = await readPageSummaries(rootDir, config);
   }
   const dashboardUpdatedFiles = await refreshDashboardPages({ config, rootDir, pages });
   updatedFiles.push(...dashboardUpdatedFiles);
   if (dashboardUpdatedFiles.length > 0) {
-    pages = await readPageSummaries(rootDir);
+    pages = await readPageSummaries(rootDir, config);
   }
   const counts = buildPageCounts(pages);
   const digestUpdatedFiles = await writeAgentDigestArtifacts({
     rootDir,
+    config,
     pages,
     pageCounts: counts,
   });
   updatedFiles.push(...digestUpdatedFiles);
 
-  const rootIndexPath = path.join(rootDir, "index.md");
+  const rootIndexPath = path.join(rootDir, config.layout.rootIndex);
   if (
     await writeManagedMarkdownFile({
       filePath: rootIndexPath,
@@ -975,7 +990,7 @@ export async function compileMemoryWikiVault(
     updatedFiles.push(rootIndexPath);
   }
 
-  for (const group of COMPILE_PAGE_GROUPS) {
+  for (const group of getCompilePageGroups(config)) {
     const filePath = path.join(rootDir, group.dir, "index.md");
     if (
       await writeManagedMarkdownFile({
@@ -991,14 +1006,18 @@ export async function compileMemoryWikiVault(
   }
 
   if (updatedFiles.length > 0) {
-    await appendMemoryWikiLog(rootDir, {
-      type: "compile",
-      timestamp: new Date().toISOString(),
-      details: {
-        pageCounts: counts,
-        updatedFiles: updatedFiles.map((filePath) => path.relative(rootDir, filePath)),
+    await appendMemoryWikiLog(
+      rootDir,
+      {
+        type: "compile",
+        timestamp: new Date().toISOString(),
+        details: {
+          pageCounts: counts,
+          updatedFiles: updatedFiles.map((filePath) => path.relative(rootDir, filePath)),
+        },
       },
-    });
+      config,
+    );
   }
 
   return {
@@ -1010,10 +1029,13 @@ export async function compileMemoryWikiVault(
   };
 }
 
-async function hasMissingWikiIndexes(rootDir: string): Promise<boolean> {
+async function hasMissingWikiIndexes(
+  rootDir: string,
+  config: ResolvedMemoryWikiConfig,
+): Promise<boolean> {
   const required = [
-    path.join(rootDir, "index.md"),
-    ...COMPILE_PAGE_GROUPS.map((group) => path.join(rootDir, group.dir, "index.md")),
+    path.join(rootDir, config.layout.rootIndex),
+    ...getCompilePageGroups(config).map((group) => path.join(rootDir, group.dir, "index.md")),
   ];
   for (const filePath of required) {
     const exists = await fs
@@ -1042,7 +1064,7 @@ export async function refreshMemoryWikiIndexesAfterImport(params: {
     params.syncResult.importedCount > 0 ||
     params.syncResult.updatedCount > 0 ||
     params.syncResult.removedCount > 0;
-  const missingIndexes = await hasMissingWikiIndexes(params.config.vault.path);
+  const missingIndexes = await hasMissingWikiIndexes(params.config.vault.path, params.config);
   if (!importChanged && !missingIndexes) {
     return {
       refreshed: false,

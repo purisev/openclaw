@@ -3,6 +3,7 @@ import path from "node:path";
 import { listActiveMemoryPublicArtifacts } from "openclaw/plugin-sdk/memory-host-core";
 import type { OpenClawConfig } from "../api.js";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
+import { resolveWikiPaths } from "./layout.js";
 import { inferWikiPageKind, toWikiPageSummary, type WikiPageKind } from "./markdown.js";
 import { probeObsidianCli } from "./obsidian.js";
 
@@ -74,7 +75,10 @@ async function pathExists(inputPath: string): Promise<boolean> {
   }
 }
 
-async function collectVaultCounts(vaultPath: string): Promise<{
+async function collectVaultCounts(
+  vaultPath: string,
+  config: ResolvedMemoryWikiConfig,
+): Promise<{
   pageCounts: Record<WikiPageKind, number>;
   sourceCounts: MemoryWikiStatus["sourceCounts"];
 }> {
@@ -82,6 +86,7 @@ async function collectVaultCounts(vaultPath: string): Promise<{
     entity: 0,
     concept: 0,
     source: 0,
+    query: 0,
     synthesis: 0,
     report: 0,
   };
@@ -92,7 +97,15 @@ async function collectVaultCounts(vaultPath: string): Promise<{
     unsafeLocal: 0,
     other: 0,
   };
-  const dirs = ["entities", "concepts", "sources", "syntheses", "reports"] as const;
+  const layout = resolveWikiPaths(config);
+  const dirs = [
+    layout.entitiesDir,
+    layout.conceptsDir,
+    layout.sourcesDir,
+    layout.queriesDir,
+    layout.synthesesDir,
+    layout.reportsDir,
+  ] as const;
   for (const dir of dirs) {
     const entries = await fs
       .readdir(path.join(vaultPath, dir), { withFileTypes: true })
@@ -105,7 +118,7 @@ async function collectVaultCounts(vaultPath: string): Promise<{
       if (kind) {
         pageCounts[kind] += 1;
       }
-      if (dir === "sources") {
+      if (dir === layout.sourcesDir) {
         const absolutePath = path.join(vaultPath, dir, entry.name);
         const raw = await fs.readFile(absolutePath, "utf8").catch(() => null);
         if (!raw) {
@@ -227,12 +240,13 @@ export async function resolveMemoryWikiStatus(
       : null;
   const obsidianProbe = await probeObsidianCli({ resolveCommand: deps?.resolveCommand });
   const counts = vaultExists
-    ? await collectVaultCounts(config.vault.path)
+    ? await collectVaultCounts(config.vault.path, config)
     : {
         pageCounts: {
           entity: 0,
           concept: 0,
           source: 0,
+          query: 0,
           synthesis: 0,
           report: 0,
         },
@@ -307,7 +321,7 @@ export function renderMemoryWikiStatus(status: MemoryWikiStatus): string {
     `Obsidian CLI: ${status.obsidianCli.available ? "available" : "missing"}${status.obsidianCli.requested ? " (requested)" : ""}`,
     `Bridge: ${status.bridge.enabled ? "enabled" : "disabled"}${typeof status.bridgePublicArtifactCount === "number" ? ` (${status.bridgePublicArtifactCount} exported artifact${status.bridgePublicArtifactCount === 1 ? "" : "s"})` : ""}`,
     `Unsafe local: ${status.unsafeLocal.allowPrivateMemoryCoreAccess ? `enabled (${status.unsafeLocal.pathCount} paths)` : "disabled"}`,
-    `Pages: ${status.pageCounts.source} sources, ${status.pageCounts.entity} entities, ${status.pageCounts.concept} concepts, ${status.pageCounts.synthesis} syntheses, ${status.pageCounts.report} reports`,
+    `Pages: ${status.pageCounts.source} sources, ${status.pageCounts.entity} entities, ${status.pageCounts.concept} concepts, ${status.pageCounts.query} queries, ${status.pageCounts.synthesis} syntheses, ${status.pageCounts.report} reports`,
     `Source provenance: ${status.sourceCounts.native} native, ${status.sourceCounts.bridge} bridge, ${status.sourceCounts.bridgeEvents} bridge-events, ${status.sourceCounts.unsafeLocal} unsafe-local, ${status.sourceCounts.other} other`,
   ];
 
